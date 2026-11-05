@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Middagsplanlegger & Handleliste</title>
+
+  <!-- PWA & Fullskjerm innstillinger -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Middagsplan">
+  <link rel="apple-touch-icon" href="icon.png">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#020617">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+  <style>
+    body { 
+      -webkit-tap-highlight-color: transparent; 
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    input, textarea {
+      -webkit-user-select: auto;
+      user-select: auto;
+    }
+    .pb-safe { padding-bottom: calc(4rem + env(safe-area-inset-bottom)); }
+    .pt-safe { padding-top: env(safe-area-inset-top); }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans pb-safe">
+
+  <!-- INNLOGGING / HUSHOLDNINGSVELGER MODAL -->
+  <div id="authModal" class="fixed inset-0 bg-slate-950 bg-opacity-95 z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl text-center">
+      <div class="w-16 h-16 bg-rose-500/10 text-rose-500 rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl">🏠</div>
+      <h2 class="text-2xl font-bold mb-2 text-white">Velg Husholdning</h2>
+      <p class="text-slate-400 text-sm mb-6">Skriv inn familienavn og PIN-kode for felles handleliste i skyen.</p>
+      
+      <div class="space-y-4 text-left">
+        <div>
+          <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Husholdningsnavn</label>
+          <input type="text" id="householdInput" placeholder="f.eks. familienhansen" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-rose-500">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">PIN-kode</label>
+          <div class="relative">
+            <input type="password" id="pinInput" placeholder="4-sifret PIN" maxlength="6" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-rose-500 pr-16">
+            <button type="button" onclick="togglePinVisibility()" id="togglePinBtn" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white bg-slate-800 px-2 py-1 rounded-lg">Vis</button>
+          </div>
+        </div>
+        <p id="authErrorMsg" class="text-xs text-rose-400 font-medium text-center hidden"></p>
+        <button onclick="loginHousehold()" class="w-full bg-rose-500 hover:bg-rose-600 text-white font-bold py-3.5 rounded-xl transition shadow-lg shadow-rose-500/20 active:scale-98 mt-2">
+          Koble Til & Synkroniser
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOP HEADER -->
+  <header class="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 py-3 pt-safe">
+    <div class="max-w-md mx-auto flex items-center justify-between">
+      <div class="pr-12">
+        <h1 class="font-bold text-lg text-white flex items-center gap-2"><span>🍽️</span> Middagsplan</h1>
+        <p id="activeHouseholdTag" class="text-xs text-rose-400 font-medium">Laster...</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="switchHousehold()" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1.5 rounded-lg border border-slate-700">Bytt gruppe</button>
+        <button onclick="openNewRecipeModal()" class="bg-rose-500 hover:bg-rose-600 text-white font-medium text-xs px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-sm active:scale-95 transition"><span>+</span> Ny rett</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- INNHOLD -->
+  <main class="max-w-md mx-auto p-4 space-y-4">
+    <!-- FANE 1: PLANLEGGING -->
+    <section id="tab-planlegge" class="space-y-4">
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Oppskrifter & Retter</h2>
+      <div id="recipeList" class="space-y-3"></div>
+    </section>
+
+    <!-- FANE 2: HANDLELISTE -->
+    <section id="tab-handleliste" class="hidden space-y-4">
+      <div class="flex items-center justify-between pr-12">
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Sortert etter butikkrute</h2>
+        <div class="flex gap-2">
+          <button onclick="openAddSingleItemModal()" class="text-xs bg-rose-500 hover:bg-rose-600 text-white px-2.5 py-1.5 rounded-lg font-medium flex items-center gap-1"><span>+</span> Vare</button>
+          <button onclick="copyShoppingList()" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-2.5 py-1.5 rounded-lg border border-slate-700">📋</button>
+          <button onclick="clearShoppingList()" class="text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 px-2.5 py-1.5 rounded-lg border border-rose-500/20">Tøm</button>
+        </div>
+      </div>
+      <div id="shoppingListContainer" class="space-y-4"></div>
+    </section>
+  </main>
+
+  <!-- NAVIGASJON -->
+  <nav class="fixed bottom-0 left-0 right-0 z-40 bg-slate-900 border-t border-slate-800 px-6 py-2">
+    <div class="max-w-md mx-auto flex justify-around">
+      <button onclick="setTab('planlegge')" id="nav-planlegge" class="flex flex-col items-center gap-1 text-rose-500 py-1 px-4 rounded-xl transition">
+        <span class="text-xl">📖</span><span class="text-xs font-medium">Planlegging</span>
+      </button>
+      <button onclick="setTab('handleliste')" id="nav-handleliste" class="flex flex-col items-center gap-1 text-slate-400 hover:text-slate-200 py-1 px-4 rounded-xl transition relative">
+        <span class="text-xl">🛒</span><span class="text-xs font-medium">Handleliste</span>
+        <span id="badgeCount" class="hidden absolute top-1 right-3 bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">0</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- MODAL: LEGG TIL ENKELTVARE -->
+  <div id="singleItemModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 w-full max-w-sm space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between">
+        <h3 class="font-bold text-white text-base">Legg til i handleliste</h3>
+        <button onclick="closeSingleItemModal()" class="text-slate-400 text-lg">✕</button>
+      </div>
+      <div class="space-y-3 relative">
+        <div class="relative">
+          <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Søk og velg vare</label>
+          <input type="text" id="singleItemSearch" placeholder="Søk i varer..." autocomplete="off" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-rose-500">
+          <div id="singleItemDropdown" class="absolute left-0 right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-xl max-h-52 overflow-y-auto z-50 hidden shadow-2xl"></div>
+        </div>
+        <div class="grid grid-cols-2 gap-2 pt-2">
+          <div>
+            <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Antall</label>
+            <input type="number" id="singleItemAmount" value="1" min="1" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white text-center">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Enhet</label>
+            <input type="text" id="singleItemUnit" value="pk" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white text-center">
+          </div>
+        </div>
+      </div>
+      <button onclick="confirmAddSingleItem()" class="w-full bg-rose-500 hover:bg-rose-600 text-white font-bold py-3 rounded-xl transition text-xs">Legg til</button>
+    </div>
+  </div>
+
+  <!-- MODAL: PANTRY CHECK -->
+  <div id="pantryCheckModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 w-full max-w-sm space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between">
+        <h3 class="font-bold text-white text-base">Har du dette hjemme?</h3>
+        <button onclick="closePantryModal()" class="text-slate-400 text-lg">✕</button>
+      </div>
+      <p class="text-xs text-slate-400">Huk av det du har. Resten går til handlelisten.</p>
+      <div id="pantryChecklist" class="space-y-2 max-h-60 overflow-y-auto pr-1"></div>
+      <button onclick="confirmAddToShoppingList()" class="w-full bg-rose-500 hover:bg-rose-600 text-white font-bold py-3 rounded-xl transition text-xs">Legg i handleliste</button>
+    </div>
+  </div>
+
+  <!-- MODAL: NY / ENDRE RETT -->
+  <div id="newRecipeModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden overflow-y-auto flex items-start justify-center p-4 py-12">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-lg space-y-4 shadow-2xl overflow-visible my-auto">
+      <div class="flex items-center justify-between">
+        <h3 id="modalTitle" class="font-bold text-white text-base">Ny Middagsrett</h3>
+        <button onclick="closeNewRecipeModal()" class="text-slate-400 text-lg">✕</button>
+      </div>
+      <div class="space-y-3 overflow-visible">
+        <input type="text" id="recipeName" placeholder="Navn på rett (f.eks. Tacos)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-rose-500">
+        <div class="space-y-2 overflow-visible">
+          <label class="block text-xs font-semibold uppercase text-slate-400">Ingredienser</label>
+          <div id="ingredientInputs" class="space-y-2 overflow-visible"></div>
+          <button onclick="addIngredientRow()" class="text-xs text-rose-400 hover:text-rose-300 font-medium flex items-center gap-1 py-1">+ Legg til råvare</button>
+        </div>
+      </div>
+      <div class="flex gap-2 pt-2">
+        <button id="deleteRecipeBtn" onclick="deleteCurrentRecipe()" class="hidden w-1/3 bg-slate-800 hover:bg-rose-900/40 text-rose-400 border border-rose-500/30 font-bold py-3 rounded-xl transition text-xs">Slett</button>
+        <button onclick="saveRecipe()" class="flex-1 bg-rose-500 hover:bg-rose-600 text-white font-bold py-3 rounded-xl transition text-xs">Lagre Rett</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyCbuVyqchyNLjs_GKKjEmW3xv_iVSStBHg",
+      authDomain: "middagsapp.firebaseapp.com",
+      databaseURL: "https://middagsapp-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "middagsapp",
+      storageBucket: "middagsapp.firebasestorage.app",
+      messagingSenderId: "393465517350",
+      appId: "1:393465517350:web:34cbeec3ee21c1a7e51de7",
+      measurementId: "G-XF2F8H2EKN"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    const CATEGORIES = [
+      { id: 'frukt', name: '🥦 1. Frukt & Grønt' },
+      { id: 'kjott', name: '🥩 2. Kjøtt & Fisk' },
+      { id: 'meieri', name: '🧀 3. Meieri & Kjøl' },
+      { id: 'torrvarer', name: '🌾 4. Tørrvarer & Hermetikk' },
+      { id: 'fryser', name: '🧊 5. Frysevarer' },
+      { id: 'annet', name: '🛒 6. Annet / Diverse' }
+    ];
+
+    const MASTER_ITEMS = [
+      // --- 1. FRUKT & GRØNT ---
+      { name: 'Agurk', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Ananas (fersk)', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Appelsiner', category: 'frukt', defaultUnit: 'kg' },
+      { name: 'Aubergine', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Avokado', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Baby spinat', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Bananer', category: 'frukt', defaultUnit: 'kg' },
+      { name: 'Bladpersille', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Blåbær', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Brokkoli', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Champignon / Sopp', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Cherrytomater', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Chili (fersk)', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Epler', category: 'frukt', defaultUnit: 'kg' },
+      { name: 'Granateple', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Grapefrukt', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Gul løk', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Gulerøtter', category: 'frukt', defaultUnit: 'kg' },
+      { name: 'Hodekål', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Hvitløk', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Ingefær', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Isbergsalat', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Jordbær', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Klementiner / Mandariner', category: 'frukt', defaultUnit: 'netto' },
+      { name: 'Koriander (fersk)', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Lime', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Maiskolber (ferske/kokeklare)', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Mango', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Melon (Vannmelon / Honningmelon)', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Nektariner / Fersken', category: 'frukt', defaultUnit: 'kg' },
+      { name: 'Paprika (rød/gul/grønn)', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Plommer', category: 'frukt', defaultUnit: 'kg' },
+      { name: 'Poteter', category: 'frukt', defaultUnit: 'kg' },
+      { name: 'Purreløk', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Pærer', category: 'frukt', defaultUnit: 'kg' },
+      { name: 'Reddik', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Romainesalat', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Rødbeter (ferske)', category: 'frukt', defaultUnit: 'kg' },
+      { name: 'Rødløk', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Sitron', category: 'frukt', defaultUnit: 'stk' },
+      { name: 'Søtpotet', category: 'frukt', defaultUnit: 'kg' },
+      { name: 'Tomater', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Vårløk', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Druer', category: 'frukt', defaultUnit: 'pk' },
+      { name: 'Bringebær', category: 'frukt', defaultUnit: 'pk' },
+
+      // --- 2. KJØTT & FISK (Presist skilt) ---
+      { name: 'Bacon', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Baconterninger', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Biffstrimler (storfe)', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Burger (Okse / Kylling)', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Calamares / Blekksprut', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Crabsticks', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Entrecôte', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Fiskekaker', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Fiskepudding', category: 'kjott', defaultUnit: 'stk' },
+      { name: 'Indrefilet av svin', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Indrefilet av storfe', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Kalkunfilet', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Karbonadedeig', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Kjøttkaker', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Kjøttdeig (storfe)', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Kjøttdeig (svin/storfe)', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Kokt skinke (pålegg)', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Kyllingfilet', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Kyllingkjøttdeig', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Kyllinglår / Lårfilet', category: 'kjott', defaultUnit: 'pk' },
+      
+      // Sjømatskille:
+      { name: 'Salmalaks (sushikvalitet / rå)', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Laksefilet (ferske porsjoner)', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Laks (frossen / blokk)', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Ferske reker (med skall / til uteservering)', category: 'kjott', defaultUnit: 'kg' },
+      { name: 'Reker i lake (boks/glass)', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Scampi / King Prawns (rå eller kokte)', category: 'kjott', defaultUnit: 'pk' },
+
+      { name: 'Leverpostei', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Pinnekjøtt', category: 'kjott', defaultUnit: 'kg' },
+      { name: 'Ribbe (svineribbe)', category: 'kjott', defaultUnit: 'kg' },
+      { name: 'Spekeskinke', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Spekepølse / Salami', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Sei / Torsk (fiskefilet)', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Svinekoteletter', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Svinekam / Svinestek', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Kjøttboller', category: 'kjott', defaultUnit: 'pk' },
+      { name: 'Lammelår', category: 'kjott', defaultUnit: 'kg' },
+      { name: 'Lammekoteletter', category: 'kjott', defaultUnit: 'pk' },
+
+      // --- 3. MEIERI & KJØL ---
+      { name: 'Creme Fraiche', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Cottage Cheese', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Cheddar (skiver eller blokk)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Egg (12-pk)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Egg (18-pk)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Fetaost', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Fløte (Matfløte)', category: 'meieri', defaultUnit: 'stk' },
+      { name: 'Kremfløte', category: 'meieri', defaultUnit: 'stk' },
+      { name: 'H-melk (Helmelk 1l)', category: 'meieri', defaultUnit: 'stk' },
+      { name: 'Lettmelk 1l', category: 'meieri', defaultUnit: 'stk' },
+      { name: 'Skummetmelk 1l', category: 'meieri', defaultUnit: 'stk' },
+      { name: 'Havremelk / Plantealternativ', category: 'meieri', defaultUnit: 'stk' },
+      { name: 'Kefir', category: 'meieri', defaultUnit: 'stk' },
+      { name: 'Kesam (mager/original)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Mozzarella (fersk i ball)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Norvegia (Gulost)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Brunost (Gudbrandsdalsost)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Parmesan (ekte)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Smør (Meierismør)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Margarin (Melange / Bremyk)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Rømme (37%)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Lettrømme', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Revet ost (Tex-Mex / Pizza)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Snøfrisk / Kremost', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Yoghurt (natur/frukt)', category: 'meieri', defaultUnit: 'pk' },
+      { name: 'Appelsinjuice / Eplejuice', category: 'meieri', defaultUnit: 'stk' },
+      { name: 'Aioli', category: 'meieri', defaultUnit: 'stk' },
+      { name: 'Hvitløksdressing', category: 'meieri', defaultUnit: 'stk' },
+
+      // --- 4. TØRRVARER & HERMETIKK ---
+      { name: 'Ananas (hermetikk)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Bakepulver', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Balsamicoeddik', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Bønner i tomatsaus (Tomatbønner)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Brun saus (pose)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Brus (Coca Cola 1.5l)', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Brus (Fanta / Sprite 1.5l)', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Buljong (Kjøtt / Høns / Veg)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Cashewnøtter / Nøtter', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Chilisaus / Sriracha', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Currypaste (rød/grønn)', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Fajitaskrydder', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Fiskeboller (hermetikk)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Frokostblanding / Cheerios', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Guacamole mix', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Gylden sirup / Honning', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Hakkede tomater (hermetikk)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Havregryn', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Hvetemel', category: 'torrvarer', defaultUnit: 'kg' },
+      { name: 'Jalapeños (hermetikk / glass)', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Kaffe (filter)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Ketchup', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Kidneybønner (hermetikk)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Kikerter (hermetikk)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Kokosmelk (hermetikk)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Knekkebrød (Wasa / Sigdal)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Linser (røde / grønne)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Mais (hermetikk)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Makaroni', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Majones', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Maizena jafning', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Mandler / Valnøtter', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Nachos / Tortillachips', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Nudler (Mr. Lee / Maggi)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Oliven (grønne / svarte)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Olivenolje', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Pannekakemiks', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Pasta (Penne / Rigatoni)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Pasta (Spaghetti)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Peanøttsmør', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Pizzasaus (glass / boks)', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Polarbrød', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Potetgull / Sørlandschips', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Rapsolje / Solsikkeolje', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Remulade', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Ris (Basmatiris / Jasmin)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Ris (Fullkorn / Brun)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Rugbrød / Ferdigbrød (holdbar)', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Sennep', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Sesamfrø', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Sjokoladeplate (Freia)', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Soyasaus', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Sukker', category: 'torrvarer', defaultUnit: 'kg' },
+      { name: 'Svarte bønner (hermetikk)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Sweet chili saus', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Tacosalsa / tacosaus', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Tacokrydder', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Tacolefser / Tortillalefser', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Tacotubos (skjell)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Tannstikker / servietter', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Te', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Tomatpure (tube)', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Vaniljesukker', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Vite bønner (hermetikk)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Grovbrød (fersk)', category: 'torrvarer', defaultUnit: 'stk' },
+      { name: 'Rundstykker (ferske / bake-off)', category: 'torrvarer', defaultUnit: 'pk' },
+      { name: 'Pizzabunn (ferdig rull)', category: 'torrvarer', defaultUnit: 'pk' },
+
+      // --- 5. FRYSEVARER ---
+      { name: 'Baguetter (frosne/bake-off)', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Brokkoliblanding (frossen)', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Erter (frosne)', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Fiskepinner', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Fløtegratinerte poteter (frossen)', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Grandiosa Pizza', category: 'fryser', defaultUnit: 'stk' },
+      { name: 'Hvitløksbaguetter', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Iskrem (Diplom-Is / Hennig-Olsen)', category: 'fryser', defaultUnit: 'stk' },
+      { name: 'Kyllingnuggets', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Lapskaus / Frossenrett', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Pommes Frites', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Vårruller (frosne)', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Wok-grønnsaker (frosne)', category: 'fryser', defaultUnit: 'pk' },
+      { name: 'Frosne bringebær / jordbær', category: 'fryser', defaultUnit: 'pk' },
+
+      // --- 6. ANNET / DIVERSE (HUSHOLDNING) ---
+      { name: 'Aluminiumfolie', category: 'annet', defaultUnit: 'stk' },
+      { name: 'Bakepapir', category: 'annet', defaultUnit: 'stk' },
+      { name: 'Deodorant', category: 'annet', defaultUnit: 'stk' },
+      { name: 'Fyrstikker / Tennvæske', category: 'annet', defaultUnit: 'stk' },
+      { name: 'Fryseposer', category: 'annet', defaultUnit: 'pk' },
+      { name: 'Håndsepe / Dusjsåpe', category: 'annet', defaultUnit: 'stk' },
+      { name: 'Klesvask (Pulver / Flytende)', category: 'annet', defaultUnit: 'stk' },
+      { name: 'Lyspærer (LED)', category: 'annet', defaultUnit: 'pk' },
+      { name: 'Oppvaskmiddel (Zalo)', category: 'annet', defaultUnit: 'stk' },
+      { name: 'Oppvasktabletter (Maskin)', category: 'annet', defaultUnit: 'pk' },
+      { name: 'Plastfolie', category: 'annet', defaultUnit: 'stk' },
+      { name: 'Q-tips / Bomullspads', category: 'annet', defaultUnit: 'pk' },
+      { name: 'Shampoo / Balsam', category: 'annet', defaultUnit: 'stk' },
+      { name: 'Søppelsekker (20l / 30l)', category: 'annet', defaultUnit: 'pk' },
+      { name: 'Tannkrem / Tannbørste', category: 'annet', defaultUnit: 'stk' },
+      { name: 'Toalettpapir', category: 'annet', defaultUnit: 'pk' },
+      { name: 'Tørkepapir', category: 'annet', defaultUnit: 'pk' },
+      { name: 'Våtservietter', category: 'annet', defaultUnit: 'pk' },
+      { name: 'Zalo refill', category: 'annet', defaultUnit: 'stk' }
+    ];
+
+    let currentHousehold = localStorage.getItem('household_code') || '';
+    let currentPin = localStorage.getItem('household_pin') || '';
+    let recipes = [];
+    let shoppingList = [];
+    let currentPendingRecipe = null;
+    let editingRecipeId = null;
+    let activeRef = null;
+
+    window.addEventListener('DOMContentLoaded', () => {
+      setupAutocomplete();
+      if (currentHousehold && currentPin) {
+        initHousehold(currentHousehold, currentPin);
+      } else {
+        document.getElementById('authModal').classList.remove('hidden');
+      }
+    });
+
+    function togglePinVisibility() {
+      const p = document.getElementById('pinInput');
+      const b = document.getElementById('togglePinBtn');
+      p.type = p.type === 'password' ? 'text' : 'password';
+      b.innerText = p.type === 'password' ? 'Vis' : 'Skjul';
+    }
+
+    function setupAutocomplete() {
+      const searchInput = document.getElementById('singleItemSearch');
+      const dropdown = document.getElementById('singleItemDropdown');
+      if (!searchInput) return;
+
+      searchInput.oninput = (e) => {
+        const q = e.target.value.toLowerCase();
+        dropdown.innerHTML = '';
+        if (!q) { dropdown.classList.add('hidden'); return; }
+
+        const matches = MASTER_ITEMS.filter(i => i.name.toLowerCase().includes(q));
+        if (matches.length === 0) {
+          dropdown.innerHTML = `<div class="p-2.5 text-xs text-slate-500">Ingen treff (bruker egendefinert)</div>`;
+          dropdown.classList.remove('hidden');
+          return;
+        }
+
+        matches.forEach(item => {
+          const div = document.createElement('div');
+          div.className = 'p-2.5 text-xs text-slate-200 hover:bg-slate-800 cursor-pointer border-b border-slate-800/50';
+          div.innerText = item.name;
+          div.onclick = () => {
+            searchInput.value = item.name;
+            document.getElementById('singleItemUnit').value = item.defaultUnit;
+            dropdown.classList.add('hidden');
+          };
+          dropdown.appendChild(div);
+        });
+        dropdown.classList.remove('hidden');
+      };
+    }
+
+    function loginHousehold() {
+      const code = document.getElementById('householdInput').value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+      const pin = document.getElementById('pinInput').value.trim();
+      const err = document.getElementById('authErrorMsg');
+      err.classList.add('hidden');
+
+      if (!code || !pin) {
+        err.innerText = "Vennligst fyll ut både navn og PIN";
+        err.classList.remove('hidden');
+        return;
+      }
+
+      db.ref('households/' + code).once('value').then(snapshot => {
+        const data = snapshot.val();
+        if (data) {
+          if (data.pin && data.pin !== pin) {
+            err.innerText = "Feil PIN-kode for denne husholdningen";
+            err.classList.remove('hidden');
+            return;
+          }
+        } else {
+          db.ref('households/' + code).set({ pin: pin, recipes: [], shoppingList: [] });
+        }
+        
+        localStorage.setItem('household_code', code);
+        localStorage.setItem('household_pin', pin);
+        currentHousehold = code;
+        currentPin = pin;
+        document.getElementById('authModal').classList.add('hidden');
+        initHousehold(code, pin);
+      }).catch(e => {
+        err.innerText = "Kunne ikke koble til skyen. Sjekk internett.";
+        err.classList.remove('hidden');
+      });
+    }
+
+    function switchHousehold() {
+      if (activeRef) activeRef.off();
+      localStorage.removeItem('household_code');
+      localStorage.removeItem('household_pin');
+      currentHousehold = '';
+      currentPin = '';
+      recipes = [];
+      shoppingList = [];
+      renderRecipes();
+      renderShoppingList();
+      document.getElementById('householdInput').value = '';
+      document.getElementById('pinInput').value = '';
+      document.getElementById('authModal').classList.remove('hidden');
+    }
+
+    function initHousehold(code, pin) {
+      document.getElementById('activeHouseholdTag').innerText = '👥 ' + code;
+      if (activeRef) activeRef.off();
+
+      activeRef = db.ref('households/' + code);
+      activeRef.on('value', snapshot => {
+        const data = snapshot.val() || {};
+        recipes = data.recipes || [];
+        shoppingList = data.shoppingList || [];
+        renderRecipes();
+        renderShoppingList();
+      });
+    }
+
+    function saveDataToCloud() {
+      if (!currentHousehold) return;
+      db.ref('households/' + currentHousehold).update({
+        recipes: recipes,
+        shoppingList: shoppingList
+      });
+    }
+
+    function setTab(tab) {
+      const pSec = document.getElementById('tab-planlegge');
+      const hSec = document.getElementById('tab-handleliste');
+      const pNav = document.getElementById('nav-planlegge');
+      const hNav = document.getElementById('nav-handleliste');
+
+      if (tab === 'planlegge') {
+        pSec.classList.remove('hidden'); hSec.classList.add('hidden');
+        pNav.className = 'flex flex-col items-center gap-1 text-rose-500 py-1 px-4 rounded-xl transition';
+        hNav.className = 'flex flex-col items-center gap-1 text-slate-400 hover:text-slate-200 py-1 px-4 rounded-xl transition relative';
+      } else {
+        pSec.classList.add('hidden'); hSec.remove('hidden');
+        pNav.className = 'flex flex-col items-center gap-1 text-slate-400 hover:text-slate-200 py-1 px-4 rounded-xl transition';
+        hNav.className = 'flex flex-col items-center gap-1 text-rose-500 py-1 px-4 rounded-xl transition relative';
+      }
+    }
+
+    function renderRecipes() {
+      const container = document.getElementById('recipeList');
+      if (!container) return;
+      container.innerHTML = '';
+      
+      if (recipes.length === 0) {
+        container.innerHTML = `<div class="text-center py-10 text-slate-500 text-xs">Ingen retter ennå. Trykk "+ Ny rett"!</div>`;
+        return;
+      }
+
+      recipes.forEach(r => {
+        const card = document.createElement('div');
+        card.className = 'bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between shadow-sm';
+        card.innerHTML = `
+          <div>
+            <h3 class="font-bold text-white text-base">${r.name}</h3>
+            <p class="text-xs text-slate-400 mt-1">${r.ingredients ? r.ingredients.length : 0} råvarer</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="openEditRecipeModal('${r.id}')" class="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-2.5 py-2 rounded-xl text-xs font-semibold">✏️</button>
+            <button onclick="promptPantryCheck('${r.id}')" class="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 px-3 py-2 rounded-xl text-xs font-semibold">+ Handle</button>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    function promptPantryCheck(recipeId) {
+      currentPendingRecipe = recipes.find(r => r.id === recipeId);
+      if (!currentPendingRecipe) return;
+
+      const checklist = document.getElementById('pantryChecklist');
+      checklist.innerHTML = '';
+
+      currentPendingRecipe.ingredients.forEach((ing, index) => {
+        const row = document.createElement('label');
+        row.className = 'flex items-center justify-between p-2.5 bg-slate-950 rounded-xl border border-slate-800/80 cursor-pointer text-xs';
+        row.innerHTML = `<span class="text-slate-200">${ing.amount} ${ing.unit} ${ing.name}</span><input type="checkbox" id="pantry-ing-${index}" class="w-4 h-4 accent-rose-500 rounded">`;
+        checklist.appendChild(row);
+      });
+      document.getElementById('pantryCheckModal').classList.remove('hidden');
+    }
+
+    function closePantryModal() {
+      document.getElementById('pantryCheckModal').classList.add('hidden');
+      currentPendingRecipe = null;
+    }
+
+    function confirmAddToShoppingList() {
+      if (!currentPendingRecipe) return;
+      currentPendingRecipe.ingredients.forEach((ing, index) => {
+        const cb = document.getElementById(`pantry-ing-${index}`);
+        if (!cb || !cb.checked) {
+          const existing = shoppingList.find(i => i.name.toLowerCase() === ing.name.toLowerCase() && i.unit === ing.unit);
+          if (existing) existing.amount += Number(ing.amount);
+          else shoppingList.push({ ...ing, checked: false });
+        }
+      });
+      saveDataToCloud();
+      closePantryModal();
+    }
+
+    function renderShoppingList() {
+      const container = document.getElementById('shoppingListContainer');
+      if (!container) return;
+      container.innerHTML = '';
+
+      if (shoppingList.length === 0) {
+        container.innerHTML = `<div class="text-center py-10 text-slate-500 text-xs">Handlelisten er tom.</div>`;
+        document.getElementById('badgeCount').classList.add('hidden');
+        return;
+      }
+
+      document.getElementById('badgeCount').innerText = shoppingList.length;
+      document.getElementById('badgeCount').classList.remove('hidden');
+
+      CATEGORIES.forEach(cat => {
+        const items = shoppingList.filter(item => (item.category || 'annet') === cat.id);
+        if (items.length > 0) {
+          const group = document.createElement('div');
+          group.className = 'bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2';
+          
+          let itemsHtml = items.map(item => {
+            const idx = shoppingList.indexOf(item);
+            return `
+              <div onclick="toggleCheck(${idx})" class="flex items-center justify-between py-2 border-b border-slate-800/50 last:border-0 cursor-pointer">
+                <span class="text-sm ${item.checked ? 'line-through text-slate-500' : 'text-slate-200'}"><strong>${item.amount} ${item.unit}</strong> ${item.name}</span>
+                <input type="checkbox" ${item.checked ? 'checked' : ''} class="w-5 h-5 accent-rose-500 rounded pointer-events-none">
+              </div>
+            `;
+          }).join('');
+
+          group.innerHTML = `<h3 class="text-xs font-bold text-rose-400 uppercase tracking-wider mb-2">${cat.name}</h3><div>${itemsHtml}</div>`;
+          container.appendChild(group);
+        }
+      });
+    }
+
+    function toggleCheck(index) {
+      shoppingList[index].checked = !shoppingList[index].checked;
+      saveDataToCloud();
+    }
+
+    function clearShoppingList() {
+      if (confirm("Tømme handlelisten?")) {
+        shoppingList = [];
+        saveDataToCloud();
+      }
+    }
+
+    function copyShoppingList() {
+      if (shoppingList.length === 0) return alert("Listen er tom!");
+      let text = "🛒 HANDLELISTE:
+
+";
+      CATEGORIES.forEach(cat => {
+        const items = shoppingList.filter(i => (i.category || 'annet') === cat.id);
+        if (items.length > 0) {
+          text += `${cat.name}
+`;
+          items.forEach(i => text += `• ${i.amount} ${i.unit} ${i.name}
+`);
+          text += `
+`;
+        }
+      });
+      navigator.clipboard.writeText(text);
+      alert("Kopiert til utklippstavlen!");
+    }
+
+    function openNewRecipeModal() {
+      editingRecipeId = null;
+      document.getElementById('modalTitle').innerText = "Ny Middagsrett";
+      document.getElementById('recipeName').value = "";
+      document.getElementById('deleteRecipeBtn').classList.add('hidden');
+      document.getElementById('ingredientInputs').innerHTML = '';
+      addIngredientRow();
+      document.getElementById('newRecipeModal').classList.remove('hidden');
+    }
+
+    function openEditRecipeModal(id) {
+      const r = recipes.find(x => x.id === id);
+      if (!r) return;
+      editingRecipeId = id;
+      document.getElementById('modalTitle').innerText = "Rediger Rett";
+      document.getElementById('recipeName').value = r.name;
+      document.getElementById('deleteRecipeBtn').classList.remove('hidden');
+      
+      const container = document.getElementById('ingredientInputs');
+      container.innerHTML = '';
+      r.ingredients.forEach(ing => addIngredientRow(ing.amount, ing.unit, ing.name, ing.category));
+      document.getElementById('newRecipeModal').classList.remove('hidden');
+    }
+
+    function closeNewRecipeModal() {
+      document.getElementById('newRecipeModal').classList.add('hidden');
+      editingRecipeId = null;
+    }
+
+    function openAddSingleItemModal() {
+      document.getElementById('singleItemSearch').value = '';
+      document.getElementById('singleItemAmount').value = '1';
+      document.getElementById('singleItemUnit').value = 'pk';
+      document.getElementById('singleItemDropdown').classList.add('hidden');
+      document.getElementById('singleItemModal').classList.remove('hidden');
+    }
+
+    function closeSingleItemModal() {
+      document.getElementById('singleItemModal').classList.add('hidden');
+    }
+
+    function addIngredientRow(amount = 1, unit = 'pk', name = '', category = 'kjott') {
+      const container = document.getElementById('ingredientInputs');
+      const rowCount = container.children.length;
+      const row = document.createElement('div');
+      row.className = 'grid grid-cols-12 gap-1.5 items-center w-full bg-slate-950 p-2 rounded-xl border border-slate-800/80 relative';
+      
+      const posClass = rowCount >= 5 ? 'bottom-full mb-1' : 'top-full mt-1';
+      let currentCat = category;
+
+      row.innerHTML = `
+        <input type="number" value="${amount}" min="1" class="col-span-2 bg-slate-900 border border-slate-800 rounded-lg px-1 py-1.5 text-xs text-white text-center ing-amount">
+        <input type="text" value="${unit}" class="col-span-3 bg-slate-900 border border-slate-800 rounded-lg px-1.5 py-1.5 text-xs text-white text-center ing-unit">
+        <div class="col-span-7 relative">
+          <input type="text" value="${name}" placeholder="Søk råvare..." autocomplete="off" class="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white ing-search">
+          <div class="absolute left-0 right-0 ${posClass} bg-slate-900 border border-slate-700 rounded-lg max-h-52 overflow-y-auto z-50 hidden shadow-2xl ing-dropdown"></div>
+        </div>
+      `;
+
+      const searchInput = row.querySelector('.ing-search');
+      const dropdown = row.querySelector('.ing-dropdown');
+      const unitEl = row.querySelector('.ing-unit');
+
+      searchInput.oninput = (e) => {
+        const q = e.target.value.toLowerCase();
+        dropdown.innerHTML = '';
+        if (!q) { dropdown.classList.add('hidden'); return; }
+
+        const matches = MASTER_ITEMS.filter(i => i.name.toLowerCase().includes(q));
+        if (matches.length === 0) {
+          dropdown.innerHTML = `<div class="p-2 text-xs text-slate-500">Egendefinert vare</div>`;
+          dropdown.classList.remove('hidden');
+          return;
+        }
+
+        matches.forEach(item => {
+          const d = document.createElement('div');
+          d.className = 'p-2 text-xs text-slate-200 hover:bg-slate-800 cursor-pointer border-b border-slate-800/50';
+          d.innerText = item.name;
+          d.onclick = () => {
+            searchInput.value = item.name;
+            unitEl.value = item.defaultUnit;
+            currentCat = item.category;
+            dropdown.classList.add('hidden');
+          };
+          dropdown.appendChild(d);
+        });
+        dropdown.classList.remove('hidden');
+      };
+
+      row.getAttributeCategory = () => currentCat;
+      container.appendChild(row);
+    }
+
+    function saveRecipe() {
+      const name = document.getElementById('recipeName').value.trim();
+      if (!name) return alert("Skriv inn navn på retten!");
+
+      const rows = document.querySelectorAll('#ingredientInputs > div');
+      const ingredients = [];
+
+      rows.forEach(r => {
+        const amount = Number(r.querySelector('.ing-amount').value) || 1;
+        const unit = r.querySelector('.ing-unit').value.trim() || 'pk';
+        const ingName = r.querySelector('.ing-search').value.trim();
+        const category = r.getAttributeCategory ? r.getAttributeCategory() : 'annet';
+
+        if (ingName) ingredients.push({ name: ingName, amount, unit, category });
+      });
+
+      if (ingredients.length === 0) return alert("Legg til minst én råvare!");
+
+      if (editingRecipeId) {
+        const idx = recipes.findIndex(r => r.id === editingRecipeId);
+        if (idx !== -1) recipes[idx] = { id: editingRecipeId, name, ingredients };
+      } else {
+        recipes.push({ id: Date.now().toString(), name, ingredients });
+      }
+
+      saveDataToCloud();
+      closeNewRecipeModal();
+    }
+
+    function deleteCurrentRecipe() {
+      if (!editingRecipeId) return;
+      if (confirm("Vil du slette denne retten?")) {
+        recipes = recipes.filter(r => r.id !== editingRecipeId);
+        saveDataToCloud();
+        closeNewRecipeModal();
+      }
+    }
+
+    function confirmAddSingleItem() {
+      const searchVal = document.getElementById('singleItemSearch').value.trim();
+      if (!searchVal) return alert("Søk opp eller skriv inn en vare!");
+
+      const match = MASTER_ITEMS.find(i => i.name.toLowerCase() === searchVal.toLowerCase()) || { name: searchVal, category: 'annet' };
+      const amount = Number(document.getElementById('singleItemAmount').value) || 1;
+      const unit = document.getElementById('singleItemUnit').value.trim() || 'pk';
+
+      const existing = shoppingList.find(i => i.name.toLowerCase() === match.name.toLowerCase() && i.unit === unit);
+      if (existing) existing.amount += amount;
+      else shoppingList.push({ name: match.name, amount, unit, category: match.category, checked: false });
+
+      saveDataToCloud();
+      closeSingleItemModal();
+    }
+  </script>
+</body>
+</html>
